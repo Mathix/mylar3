@@ -120,6 +120,7 @@ class WebViewer(object):
         return
 
 
+    
 class ComicScanner(object):
 
     # This method will handle scanning the directories and returning a list of them all.
