@@ -5775,7 +5775,7 @@ class WebInterface(object):
 
     api.exposed = True
 
-
+    @cherrypy.expose('opds_comics')
     def opds(self, *args, **kwargs):
         from mylar.opds import OPDS
 
@@ -5788,7 +5788,7 @@ class WebInterface(object):
         return data
 
 
-    opds.exposed = True
+    #opds.exposed = True
 
     def downloadthis(self, pathfile=None):
         #pathfile should be escaped via the |u tag from within the html call already.

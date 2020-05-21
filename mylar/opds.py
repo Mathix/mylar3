@@ -30,9 +30,10 @@ from operator import itemgetter
 from cherrypy.lib.static import serve_file, serve_download
 import datetime
 from mylar.webserve import serve_template
+from mylar.webviewer import ComicScanner
 import re
 
-cmd_list = ['root', 'Publishers', 'AllTitles', 'StoryArcs', 'ReadList', 'OneOffs', 'Comic', 'Publisher', 'Issue', 'StoryArc', 'Recent', 'deliverFile']
+cmd_list = ['root', 'Publishers', 'AllTitles', 'StoryArcs', 'ReadList', 'OneOffs', 'Comic', 'Publisher', 'Issue', 'StoryArc', 'Recent', 'deliverFile', 'stream']
 
 class OPDS(object):
 
@@ -45,18 +46,21 @@ class OPDS(object):
         self.filename = None
         self.kwargs = None
         self.data = None
+        self.cache_dir = mylar.CONFIG.CACHE_DIR
+        self.comiclocation = None
+        self.pagecount = None
+
         if mylar.CONFIG.HTTP_ROOT is None:
-            self.opdsroot = '/opds'
+            self.opdsroot = 'opds-comics/reader'
         elif mylar.CONFIG.HTTP_ROOT.endswith('/'):
-            self.opdsroot = mylar.CONFIG.HTTP_ROOT + 'opds'
+            self.opdsroot = mylar.CONFIG.HTTP_ROOT + 'opds-comics/reader'
         else:
             if mylar.CONFIG.HTTP_ROOT != '/':
-                self.opdsroot = mylar.CONFIG.HTTP_ROOT + '/opds'
+                self.opdsroot = mylar.CONFIG.HTTP_ROOT + '/opds-comics/reader'
             else:
-                self.opdsroot = mylar.CONFIG.HTTP_ROOT + 'opds'
+                self.opdsroot = mylar.CONFIG.HTTP_ROOT + 'opds-comics/reader'
 
     def checkParams(self, *args, **kwargs):
-
 
         if 'cmd' not in kwargs:
             self.cmd = 'root'
@@ -78,7 +82,7 @@ class OPDS(object):
     def fetchData(self):
 
         if self.data == 'OK':
-            logger.fdebug('Recieved OPDS command: ' + self.cmd)
+            logger.fdebug('Received OPDS command: ' + self.cmd)
             methodToCall = getattr(self, "_" + self.cmd)
             result = methodToCall(**self.kwargs)
             if self.img:
@@ -97,6 +101,33 @@ class OPDS(object):
                 return serve_template(templatename="opds.html", title=self.data['title'], opds=self.data)
         else:
             return self.data
+
+    def _stream(self, **kwargs):
+
+        ish_id = kwargs['issueid']
+        page = int(kwargs['page'])
+
+        scanner = ComicScanner()
+        image_list = scanner.reading_images(ish_id)
+        logger.debug("Image list contains %s pages" % (len(image_list)))
+        if len(image_list) == 0:
+            issue = self._dic_from_query(f"SELECT * from issues where IssueID={ish_id}")
+            comic_id = int(issue[0]['ComicID'])
+            comic = self._dic_from_query(f"SELECT * from comics where ComicID={comic_id}")
+            comic_path = os.path.join(comic[0]['ComicLocation'], issue[0]['Location'])
+            logger.debug("Unpacking ish_id %s from comic_path %s" % (ish_id, comic_path))
+            scanner.user_unpack_comic(ish_id, comic_path)
+            image_list = scanner.reading_images(ish_id)
+        else:
+            logger.debug("ish_id %s already unpacked." % ish_id)
+        cache_dir = os.path.normpath(os.path.split(self.cache_dir)[0])
+        img_loc = os.path.normpath(image_list[page])
+
+        self.img = f"{cache_dir}{img_loc}"
+        self.pagecount = len(image_list)
+
+        return
+
 
     def _error_with_message(self, message):
         error = '<feed><error>%s</error></feed>' % message
@@ -357,7 +388,7 @@ class OPDS(object):
             self.data =self._error_with_message('No ComicID Provided')
             return
         links = []
-        entries=[]
+        entries = []
         comic = myDB.selectone('SELECT * from comics where ComicID=?', (kwargs['comicid'],)).fetchone()
         if not comic:
             self.data = self._error_with_message('Comic Not Found')
@@ -394,19 +425,22 @@ class OPDS(object):
                 if mylar.CONFIG.OPDS_METAINFO:
                     metainfo = mylar.helpers.IssueDetails(fileloc)
                 if not metainfo:
-                    metainfo = [{'writer': None,'summary': ''}]
+                    metainfo = [{'writer': None,'summary': '', 'pagecount': None}]
+
                 entries.append(
                     {
                         'title': escape(title),
                         'id': escape('comic:%s (%s) [%s] - %s' % (issue['ComicName'], comic['ComicYear'], comic['ComicID'], issue['Issue_Number'])),
                         'updated': updated,
-                        'content': escape('%s' % (metainfo[0]['summary'])),
+                        'content': escape('%s' % (metainfo['metadata']['summary'])),
                         'href': '%s?cmd=Issue&amp;issueid=%s&amp;file=%s' % (self.opdsroot, quote_plus(issue['IssueID']),quote_plus(issue['Location'].encode('utf-8'))),
+                        'stream': '%s?cmd=stream&amp;issueid=%s&amp;page={pageNumber}&amp;width={maxWidth}' % (self.opdsroot, quote_plus(issue['IssueID'])),
                         'kind': 'acquisition',
                         'rel': 'file',
-                        'author': metainfo[0]['writer'],
+                        'author': metainfo['metadata']['writer'],
                         'image': image,
                         'thumbnail': thumbnail,
+                        'pagecount': metainfo['metadata']['pagecount']
                     }
                 )
 
@@ -514,7 +548,7 @@ class OPDS(object):
             #logger.fdebug("file name: %s" % str(kwargs['file'])
             self.filename = os.path.split(str(kwargs['file']))[1]
             self.file = str(kwargs['file'])
-        return 
+        return
 
     def _Issue(self, **kwargs):
         if 'issueid' not in kwargs:
@@ -629,7 +663,7 @@ class OPDS(object):
                 subset = readlist[index:(index + self.PAGE_SIZE)]
                 for issue in subset:
                     metainfo = None
-                    metainfo = [{'writer': None,'summary': ''}]
+                    metainfo = [{'writer': None,'summary': '', 'pagecount': None}]
                     entries.append(
                         {
                             'title': escape(issue['Title']),

@@ -1,5 +1,11 @@
 ## ![Mylar Logo](https://github.com/evilhero/mylar/blob/master/data/images/mylarlogo.png) Mylar3
 
+## Fork to implement OPDS Page Streaming Extension
+
+OPDS Page Streaming Extension  (unofficial extension initially created for Ubooquity), detailed here : http://vaemendis.net/opds-pse/
+
+Goal is to use the Kuboo Android app to stream comics (should also work with Chunky iOS app) 
+
 ## This fork is a Work-In-Progress, but should still be stable enough for daily use. 
 
 Mylar is an automated Comic Book (cbr/cbz) downloader program for use with NZB and torrents written in python. It supports SABnzbd, NZBGET, and many torrent clients in addition to DDL.

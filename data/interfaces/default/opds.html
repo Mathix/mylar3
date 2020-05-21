@@ -1,5 +1,6 @@
 <feed xmlns="http://www.w3.org/2005/Atom"
       xmlns:xhtml="http://www.w3.org/1999/xhtml"
+      xmlns:pse="http://vaemendis.net/opds-pse/ns"
       xmlns:opds="http://opds-spec.org/2010/catalog"
       xmlns:opensearch="http://a9.com/-/spec/opensearch/1.1/"
       xmlns:dcterms="http://purl.org/dc/terms/">
@@ -29,17 +30,19 @@
         %endif
         <updated>${entry['updated']}</updated>
         <content type="text">${entry['content']}</content>
+        %if 'image' in entry and entry['image']:
+        <link type="image/jpeg" rel="http://opds-spec.org/image" href="${entry['image']}" />
+        %endif
+        %if 'thumbnail' in entry and entry['thumbnail']:
+        <link type="image/jpeg" rel="http://opds-spec.org/image/thumbnail" href="${entry['thumbnail']}" />
+        %endif
         %if entry['rel'] == 'file':
-        <link href="${entry['href']}" rel="http://opds-spec.org/acquisition" type="application/octet-stream"/>
+        <link type="application/octet-stream" rel="http://opds-spec.org/acquisition" href="${entry['href']}" />
+        <link type="image/jpeg" rel= "http://vaemendis.net/opds-pse/stream" href="${entry['stream']}"  pse:count="${entry['pagecount']}"/>
         %else:
         <link href="${entry['href']}" rel= "${entry['rel']}" type="application/atom+xml; profile=opds-catalog; kind=${entry['kind']}"/>
         %endif
-        %if 'thumbnail' in entry and entry['thumbnail']:
-        <link href="${entry['thumbnail']}" type="image/jpeg" rel="http://opds-spec.org/image/thumbnail"/>
-        %endif
-        %if 'image' in entry and entry['image']:
-        <link href="${entry['image']}" type="image/jpeg" rel="http://opds-spec.org/image"/>
-        %endif
+
     </entry>
     %endfor
 </feed>
