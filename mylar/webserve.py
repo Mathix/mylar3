@@ -981,7 +981,7 @@ class WebInterface(object):
                 metainfo = helpers.IssueDetails(filelocation, IssueID=issueid)
 
                 if metainfo['metadata'] is None:
-                    logger.info('No metadata found for issueid:' + issue['IssueID'])
+                    logger.error('No metadata found for issueid:' + issue['IssueID'])
                     continue
 
                 pg_count = metainfo['metadata']['pagecount']
@@ -990,9 +990,9 @@ class WebInterface(object):
                 newValueDict = {'PageCount': pg_count}
                 myDB.upsert("issues", newValueDict, controlValueDict)
                 counter += 1
-                logger.info('Pagecount filled for issueid:' + issue['IssueID'])
+                logger.fdebug('Pagecount filled for issueid:' + issue['IssueID'])
 
-            logger.info(f'{counter} issues have been processed')
+            logger.info(f'Maintenance : PageCount has been updated for {counter} issues')
     fillPageCount.exposed = True
 
     def pauseSeries(self, ComicID):
