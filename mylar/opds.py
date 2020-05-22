@@ -421,16 +421,18 @@ class OPDS(object):
                 if not os.path.isfile(fileloc):
                     logger.debug("Missing File: %s" % (fileloc))
                     continue
-                metainfo = None
+                metainfo = {}
                 if mylar.CONFIG.OPDS_METAINFO:
                     metainfo = mylar.helpers.IssueDetails(fileloc)
                 if not metainfo:
-                    metainfo = [{'writer': None,'summary': '', 'pagecount': None}]
+                    metadata = {'writer': '','summary': '', 'pagecount': issue['PageCount']}
+                    metainfo['metadata'] = metadata
 
                 entries.append(
                     {
                         'title': escape(title),
-                        'id': escape('comic:%s (%s) [%s] - %s' % (issue['ComicName'], comic['ComicYear'], comic['ComicID'], issue['Issue_Number'])),
+                        #'id': escape('comic:%s (%s) [%s] - %s' % (issue['ComicName'], comic['ComicYear'], comic['ComicID'], issue['Issue_Number'])),
+                        'id': escape(f"{issue['Location']} - {'' if issue['IssueName'] is None else issue['IssueName']}"),
                         'updated': updated,
                         'content': escape('%s' % (metainfo['metadata']['summary'])),
                         'href': '%s?cmd=Issue&amp;issueid=%s&amp;file=%s' % (self.opdsroot, quote_plus(issue['IssueID']),quote_plus(issue['Location'].encode('utf-8'))),
