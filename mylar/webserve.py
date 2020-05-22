@@ -978,10 +978,14 @@ class WebInterface(object):
                 issue_loc = issue['Location']
                 filelocation = os.path.join (comic_loc,issue_loc)
 
-                metainfo = helpers.IssueDetails(filelocation, IssueID=issueid)
+                try:
+                    metainfo = helpers.IssueDetails(filelocation, IssueID=issueid)
+                    if metainfo['metadata'] is None:
+                        logger.error('No metadata found for issueid:' + issue['IssueID'])
+                        continue
 
-                if metainfo['metadata'] is None:
-                    logger.error('No metadata found for issueid:' + issue['IssueID'])
+                except:
+                    logger.error('Unable to get metadata issueid:' + issue['IssueID'])
                     continue
 
                 pg_count = metainfo['metadata']['pagecount']
