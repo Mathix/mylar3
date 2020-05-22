@@ -952,6 +952,43 @@ class WebInterface(object):
         return
     post_process.exposed = True
 
+    def fillPageCount(self, publisher):
+        myDB = db.DBConnection()
+        comics = myDB.select('SELECT * FROM comics WHERE ComicPublisher=?', [publisher])
+
+        # comicid = str(comicid)  # it's coming in unicoded...
+
+        # logger.fdebug(type(comicid))
+        # logger.fdebug(type(issueid))
+        # logger.fdebug('comicid: %s' % comicid)
+        # logger.fdebug('issue# as per cv: %s' % issue)
+
+        for comic in comics:
+            comicid= str(comic['ComicID'])
+            issues = myDB.select('SELECT * FROM issues WHERE ComicID=?', [comicid])
+
+            comic_loc = comic['ComicLocation']
+
+            for issue in issues:
+
+                if issue['Location'] is None:
+                    continue
+
+                issueid = str(issue['IssueID'])
+                issue_loc = issue['Location']
+                filelocation = os.path.join (comic_loc,issue_loc)
+
+                metainfo = helpers.IssueDetails(filelocation, IssueID=issueid)
+
+                pg_count = metainfo['metadata']['pagecount']
+
+                controlValueDict = {'IssueID': issueid}
+                newValueDict = {'PageCount': pg_count}
+                myDB.upsert("issues", newValueDict, controlValueDict)
+
+                logger.fdebug('issueid:' + issue['IssueID'])
+    fillPageCount.exposed = True
+
     def pauseSeries(self, ComicID):
         logger.info("Pausing comic: " + ComicID)
         myDB = db.DBConnection()

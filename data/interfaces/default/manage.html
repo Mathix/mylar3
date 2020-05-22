@@ -24,6 +24,7 @@
                         <li><a href="#tabs-2">Manual Post-Processing</a></li>
                         <li><a href="#tabs-3">Advanced Options</a></li>
                         <li><a href="#tabs-4" title="jobs">Activity / Jobs</a></li>
+                        <li><a href="#tabs-5" >Maintenance</a></li>
 		</ul>
 		<div id="tabs-1" class="configtable">
                                <div style="float:right;position:absolute;right:0;top;0;margin-right:50px;">
@@ -151,6 +152,7 @@
                                             <input type="hidden" name="nzb_name" value='Manual Run' />
                                         </div>
                                       <input type="button" value="Go Manual Run!" onclick="doAjaxCall('post_process',$(this),'tabs',true);return false;" data-success="Manual post-processing now running." data-error="Manual post-processing unable to run at this time.">
+                                       <input type="button" value="Fill Page Count" onclick="doAjaxCall('post_process',$(this),'tabs',true);return false;" data-success="Filling page count from metadata." data-error="Failing to run at this time.">
                                    </fieldset>
                          </form>
                     </td>
@@ -240,7 +242,30 @@
            </table>
            </br><small><center>There could be up to a 60s delay in a given scheduler running due to other processes currently running</center></small>
         </div>
-
+        <div id="tabs-5" class="configtable">
+                  <tr>
+                    <td>
+                         <form action="fillPageCount" method="GET" id="fillPageCount">
+                                   <fieldset>
+                                        <legend>Maintenance</legend>
+                                        <p><strong>Fill page count from Metadata</strong></p>
+                                        <p>Input publisher name
+                                        <br/><small>For example: 'Wildstorm'</small></p>
+                                        <p>
+                                        It may take a while depending on how many files you have.
+                                        </p>
+                                        <br/>
+                                        <div class="row">
+                                            <label for="">Publisher</label>
+                                              <input type="text" value="Enter the publisher name" onfocus="if
+                                              (this.value==this.defaultValue) this.value='';" name="publisher" size="70" />
+                                        </div>
+                                       <input type="button" value="Fill Page Count" onclick="doAjaxCall('fillPageCount',$(this),'tabs',true);return false;" data-success="Filling page count from metadata." data-error="Failing to run at this time.">
+                                   </fieldset>
+                         </form>
+                    </td>
+                  </tr>
+                </div>
 
 </div>
 </%def>
