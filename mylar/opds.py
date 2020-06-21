@@ -93,7 +93,7 @@ class OPDS(object):
                         readinglist.Readinglist(IssueID=self.issue_id).markasRead()
                     except:
                         logger.fdebug('No reading list found to update.')
-                return serve_download(path=self.file.encode('utf-8'), name=self.filename.encode('utf-8'))
+                return serve_download(path=self.file, name=self.filename)
             if isinstance(self.data, str):
                 return self.data
             else:
@@ -423,7 +423,9 @@ class OPDS(object):
                     continue
                 metainfo = {}
                 if mylar.CONFIG.OPDS_METAINFO:
-                    metainfo = mylar.helpers.IssueDetails(fileloc)
+                    issuedetails = mylar.helpers.IssueDetails(issue['fileloc']).get('metadata', None)
+                    if issuedetails is not None:
+                       metainfo = issuedetails.get('metadata', None)
                 if not metainfo:
                     metadata = {'writer': '','summary': '', 'pagecount': issue['PageCount']}
                     metainfo['metadata'] = metadata
@@ -434,8 +436,8 @@ class OPDS(object):
                         #'id': escape('comic:%s (%s) [%s] - %s' % (issue['ComicName'], comic['ComicYear'], comic['ComicID'], issue['Issue_Number'])),
                         'id': escape(f"{issue['Location']} - {'' if issue['IssueName'] is None else issue['IssueName']}"),
                         'updated': updated,
-                        'content': escape('%s' % (metainfo['metadata']['summary'])),
-                        'href': '%s?cmd=Issue&amp;issueid=%s&amp;file=%s' % (self.opdsroot, quote_plus(issue['IssueID']),quote_plus(issue['Location'].encode('utf-8'))),
+                        'content': escape('%s' % (metainfo[0]['summary'])),
+                        'href': '%s?cmd=Issue&amp;issueid=%s&amp;file=%s' % (self.opdsroot, quote_plus(issue['IssueID']),quote_plus(issue['Location'])),
                         'stream': '%s?cmd=stream&amp;issueid=%s&amp;page={pageNumber}&amp;width={maxWidth}' % (self.opdsroot, quote_plus(issue['IssueID'])),
                         'kind': 'acquisition',
                         'rel': 'file',
@@ -501,13 +503,15 @@ class OPDS(object):
                     number +=1
                     if not issuebook['Location']:
                         continue
-                    location = issuebook['Location'].encode('utf-8')
+                    location = issuebook['Location']
                     fileloc = os.path.join(comic['ComicLocation'],issuebook['Location'])
                     metainfo = None
                     if mylar.CONFIG.OPDS_METAINFO:
-                        metainfo = mylar.helpers.IssueDetails(fileloc)
+                        issuedetails = mylar.helpers.IssueDetails(issue['fileloc']).get('metadata', None)
+                        if issuedetails is not None:
+                            metainfo = issuedetails.get('metadata', None)
                     if not metainfo:
-                        metainfo = [{'writer': None,'summary': ''}]
+                        metainfo = {'writer': None,'summary': ''}
                     entries.append(
                         {
                             'title': title,
@@ -642,13 +646,13 @@ class OPDS(object):
         entries = []
         flist = []
         book = ''
-        gbd = str(mylar.CONFIG.GRABBAG_DIR + '/*').encode('utf-8')
+        gbd = str(mylar.CONFIG.GRABBAG_DIR + '/*')
         flist = glob.glob(gbd)
         readlist = []
         for book in flist:
             issue = {}
             fileexists = True
-            book = book.encode('utf-8')
+            book = book
             issue['Title'] = book
             issue['IssueID'] = book
             issue['fileloc'] = book
@@ -719,7 +723,7 @@ class OPDS(object):
                 if bookentry['Location']:
                     fileexists = True
                     issue['fileloc'] = os.path.join(comic['ComicLocation'], bookentry['Location'])
-                    issue['filename'] = bookentry['Location'].encode('utf-8')
+                    issue['filename'] = bookentry['Location']
                     issue['image'] =  bookentry['ImageURL_ALT']
                     issue['thumbnail'] =  bookentry['ImageURL']
                 if  bookentry['DateAdded']:
@@ -732,7 +736,7 @@ class OPDS(object):
                     if annualentry['Location']:
                         fileexists = True
                         issue['fileloc'] = os.path.join(comic['ComicLocation'],  annualentry['Location'])
-                        issue['filename'] = annualentry['Location'].encode('utf-8')
+                        issue['filename'] = annualentry['Location']
                         issue['image'] = None
                         issue['thumbnail'] = None
                         issue['updated'] =  annualentry['IssueDate']
@@ -746,7 +750,9 @@ class OPDS(object):
                 for issue in subset:
                     metainfo = None
                     if mylar.CONFIG.OPDS_METAINFO:
-                        metainfo = mylar.helpers.IssueDetails(issue['fileloc'])
+                        issuedetails = mylar.helpers.IssueDetails(issue['fileloc']).get('metadata', None)
+                        if issuedetails is not None:
+                            metainfo = issuedetails.get('metadata', None)
                     if not metainfo:
                         metainfo = [{'writer': None,'summary': ''}]
                     entries.append(
@@ -807,7 +813,7 @@ class OPDS(object):
             if book['Location']:
                 issue['fileloc'] = book['Location']
                 fileexists = True
-                issue['filename'] = os.path.split(book['Location'])[1].encode('utf-8')
+                issue['filename'] = os.path.split(book['Location'])[1]
                 issue['image'] = None
                 issue['thumbnail'] = None
                 issue['updated'] = book['IssueDate']
@@ -818,7 +824,7 @@ class OPDS(object):
                         comic = myDB.selectone("SELECT * from comics WHERE ComicID=?", ( bookentry['ComicID'],)).fetchone()
                         fileexists = True
                         issue['fileloc'] = os.path.join(comic['ComicLocation'], bookentry['Location'])
-                        issue['filename'] = bookentry['Location'].encode('utf-8')
+                        issue['filename'] = bookentry['Location']
                         issue['image'] =  bookentry['ImageURL_ALT']
                         issue['thumbnail'] =  bookentry['ImageURL']
                     if  bookentry['DateAdded']:
@@ -832,7 +838,7 @@ class OPDS(object):
                             comic = myDB.selectone("SELECT * from comics WHERE ComicID=?", ( annualentry['ComicID'],))
                             fileexists = True
                             issue['fileloc'] = os.path.join(comic['ComicLocation'],  annualentry['Location'])
-                            issue['filename'] = annualentry['Location'].encode('utf-8')
+                            issue['filename'] = annualentry['Location']
                             issue['image'] = None
                             issue['thumbnail'] = None
                             issue['updated'] =  annualentry['IssueDate']
@@ -840,7 +846,7 @@ class OPDS(object):
                             if book['Location']:
                                 fileexists = True
                                 issue['fileloc'] = book['Location']
-                                issue['filename'] = os.path.split(book['Location'])[1].encode('utf-8')
+                                issue['filename'] = os.path.split(book['Location'])[1]
                                 issue['image'] = None
                                 issue['thumbnail'] = None
                                 issue['updated'] = book['IssueDate']
@@ -854,7 +860,9 @@ class OPDS(object):
                 for issue in subset:
                     metainfo = None
                     if mylar.CONFIG.OPDS_METAINFO:
-                        metainfo = mylar.helpers.IssueDetails(issue['fileloc'])
+                        issuedetails = mylar.helpers.IssueDetails(issue['fileloc']).get('metadata', None)
+                        if issuedetails is not None:
+                            metainfo = issuedetails.get('metadata', None)
                     if not metainfo:
                         metainfo = [{'writer': None,'summary': ''}]
                     entries.append(

@@ -49,13 +49,39 @@ from operator import itemgetter
 
 def serve_template(templatename, **kwargs):
     interface_dir = os.path.join(str(mylar.PROG_DIR), 'data/interfaces/')
-    template_dir = os.path.join(str(interface_dir), mylar.CONFIG.INTERFACE)
+    if any([mylar.CONFIG.INTERFACE == 'default', mylar.CONFIG.INTERFACE is None]):
+        tmper_dir = 'default'
+    else:
+        tmper_dir = mylar.CONFIG.INTERFACE
+    
+    icons = []
+    if mylar.CONFIG.INTERFACE == 'default':
+        icons = {'icon_gear': os.path.join(mylar.CONFIG.HTTP_ROOT, 'images', 'icon_gear.png'),
+                 'icon_upcoming': os.path.join(mylar.CONFIG.HTTP_ROOT, 'images', 'icon_upcoming.png'),
+                 'icon_wanted': os.path.join(mylar.CONFIG.HTTP_ROOT, 'images', 'icon_wanted.png'),
+                 'prowl_logo': os.path.join(mylar.CONFIG.HTTP_ROOT, 'images', 'prowl_logo.png'),
+                 'ReadingList-icon': os.path.join(mylar.CONFIG.HTTP_ROOT, 'images', 'ReadingList-icon.png')}
+    else:
+        icons = {'icon_gear': os.path.join(mylar.CONFIG.HTTP_ROOT, 'interfaces', 'carbon', 'images', 'icon_gear.png'),
+                 'icon_upcoming': os.path.join(mylar.CONFIG.HTTP_ROOT, 'interfaces', 'carbon', 'images', 'icon_upcoming.png'),
+                 'icon_wanted': os.path.join(mylar.CONFIG.HTTP_ROOT, 'interfaces', 'carbon', 'images', 'icon_wanted.png'),
+                 'prowl_logo': os.path.join(mylar.CONFIG.HTTP_ROOT, 'interfaces', 'carbon', 'images', 'prowl_logo.png'),
+                 'ReadingList-icon': os.path.join(mylar.CONFIG.HTTP_ROOT, 'interfaces', 'carbon', 'images', 'ReadingList-icon.png')}
+
+    template_dir = os.path.join(str(interface_dir), tmper_dir)
     _hplookup = TemplateLookup(directories=[template_dir])
     try:
         template = _hplookup.get_template(templatename)
-        return template.render(http_root=mylar.CONFIG.HTTP_ROOT, **kwargs)
-    except:
-        return exceptions.html_error_template().render()
+        return template.render(http_root=mylar.CONFIG.HTTP_ROOT, interface=mylar.CONFIG.INTERFACE, icons=icons, **kwargs)
+    except Exception as e:
+        #default to base in case the html hasn't been changed in new interface.
+        template_dir = os.path.join(str(interface_dir), 'default')
+        _hplookup = TemplateLookup(directories=[template_dir])
+        try:
+            template = _hplookup.get_template(templatename)
+            return template.render(http_root=mylar.CONFIG.HTTP_ROOT, interface=mylar.CONFIG.INTERFACE, icons=icons, **kwargs)
+        except:
+            return exceptions.html_error_template().render()
 
 class WebInterface(object):
 
@@ -236,12 +262,22 @@ class WebInterface(object):
             issues_list = None
         #logger.info('issues_list: %s' % issues_list)
 
-        if comic['Corrected_Type'] == 'TPB':
-            force_type = 1
-        elif comic['Corrected_Type'] == 'Print':
-            force_type = 2
+        if comic['Corrected_Type'] == comic['Type']:
+            force_type = None
         else:
-            force_type = 0
+            if comic['Corrected_Type'] == 'TPB':
+                force_type = 'TPB'
+            elif comic['Corrected_Type'] == 'Digital':
+                force_type = 'Digital'
+            elif comic['Corrected_Type'] == 'One-Shot':
+                force_type = 'One-Shot'
+            elif comic['Corrected_Type'] == 'Print' or comic['Corrected_Type'] is None:
+                if comic['Type'] is None:
+                    force_type = 'Print'
+                elif comic['Corrected_Type'] is None:
+                    force_type = None
+                else:
+                    force_type = comic['Corrected_Type']
 
         comicConfig = {
                     "fuzzy_year0":                    helpers.radio(int(usethefuzzy), 0),
@@ -249,7 +285,8 @@ class WebInterface(object):
                     "fuzzy_year2":                    helpers.radio(int(usethefuzzy), 2),
                     "skipped2wanted":                 helpers.checked(skipped2wanted),
                     "force_continuing":               helpers.checked(force_continuing),
-                    "force_type":                     helpers.checked(force_type),
+                    "ignore_type":                    helpers.checked(comic['IgnoreType']),
+                    "force_type":                     force_type,
                     "delete_dir":                     helpers.checked(mylar.CONFIG.DELETE_REMOVE_DIR),
                     "allow_packs":                    helpers.checked(int(allowpacks)),
                     "corrected_seriesyear":           comic['ComicYear'],
@@ -1521,6 +1558,8 @@ class WebInterface(object):
             ComicName = cdname['ComicName']
             TorrentID_32p = cdname['TorrentID_32P']
             BookType = cdname['Type']
+            if cdname['Corrected_Type'] is not None:
+                BookType = cdname['Corrected_Type']
             controlValueDict = {"IssueID": IssueID}
             newStatus = {"Status": "Wanted"}
             if mode == 'want':
@@ -4822,13 +4861,21 @@ class WebInterface(object):
                     if len(search_matches) > 1:
                        # if we matched on more than one series above, just save those results instead of the entire search result set.
                         for sres in search_matches:
+                            try:
+                                if type(sres['haveit']) is dict:
+                                    imp_cid = sres['haveit']['comicid']
+                                else:
+                                    imp_cid = sres['haveit']
+                            except Exception as e:
+                                imp_cid = sres['haveit']
+
                             cVal = {"SRID":        SRID,
                                     "comicid":     sres['comicid']}
                             #should store ogcname in here somewhere to account for naming conversions above.
                             nVal = {"Series":      ComicName,
                                     "results":     len(search_matches),
                                     "publisher":   sres['publisher'],
-                                    "haveit":      sres['haveit'],
+                                    "haveit":      imp_cid,
                                     "name":        sres['name'],
                                     "deck":        sres['deck'],
                                     "url":         sres['url'],
@@ -4849,13 +4896,21 @@ class WebInterface(object):
                         # store the search results for series that returned more than one result for user to select later / when they want.
                         # should probably assign some random numeric for an id to reference back at some point.
                         for sres in sresults:
+                            try:
+                                if type(sres['haveit']) == dict:
+                                    imp_cid = sres['haveit']['comicid']
+                                else:
+                                    imp_cid = sres['haveit']
+                            except Exception as e:
+                                imp_cid = sres['haveit']
+                                
                             cVal = {"SRID":        SRID,
                                     "comicid":     sres['comicid']}
                             #should store ogcname in here somewhere to account for naming conversions above.
                             nVal = {"Series":      ComicName,
                                     "results":     len(sresults),
                                     "publisher":   sres['publisher'],
-                                    "haveit":      sres['haveit'],
+                                    "haveit":      imp_cid,
                                     "name":        sres['name'],
                                     "deck":        sres['deck'],
                                     "url":         sres['url'],
@@ -5328,17 +5383,23 @@ class WebInterface(object):
         raise cherrypy.HTTPRedirect("comicDetails?ComicID=%s" % comicid)
     manual_annual_add.exposed = True
 
-    def comic_config(self, com_location, ComicID, alt_search=None, fuzzy_year=None, comic_version=None, force_continuing=None, force_type=None, alt_filename=None, allow_packs=None, corrected_seriesyear=None, torrentid_32p=None):
+    def comic_config(self, com_location, ComicID, alt_search=None, fuzzy_year=None, comic_version=None, force_continuing=None, force_type=None, alt_filename=None, allow_packs=None, corrected_seriesyear=None, torrentid_32p=None, ignore_type=None):
         myDB = db.DBConnection()
-        chk1 = myDB.selectone('SELECT ComicLocation, Corrected_Type FROM comics WHERE ComicID=?', [ComicID]).fetchone()
+        chk1 = myDB.selectone('SELECT ComicLocation, Type, Corrected_Type FROM comics WHERE ComicID=?', [ComicID]).fetchone()
         if chk1[0] is None:
             orig_location = com_location
         else:
             orig_location = chk1[0]
+
         if chk1[1] is None:
             orig_type = None
         else:
             orig_type = chk1[1]
+
+        if chk1[2] is None:
+            orig_corr_type = None
+        else:
+            orig_corr_type = chk1[2]
 
 #--- this is for multiple search terms............
 #--- works, just need to redo search.py to accomodate multiple search terms
@@ -5382,29 +5443,46 @@ class WebInterface(object):
             newValues['ComicYear'] = str(corrected_seriesyear)
 
         if comic_version is None or comic_version == 'None':
-            newValues['ComicVersion'] = "None"
+            newValues['ComicVersion'] = None
         else:
             if comic_version[1:].isdigit() and comic_version[:1].lower() == 'v':
                 newValues['ComicVersion'] = str(comic_version)
             else:
                 logger.info("Invalid Versioning entered - it must be in the format of v#")
-                newValues['ComicVersion'] = "None"
+                newValues['ComicVersion'] = None
 
         if force_continuing is None:
             newValues['ForceContinuing'] = 0
         else:
             newValues['ForceContinuing'] = 1
 
-        if force_type == '1':
+        if force_type == 'TPB':
             newValues['Corrected_Type'] = 'TPB'
-        elif force_type == '2':
+        elif force_type == 'Digital':
+            newValues['Corrected_Type'] = 'Digital'
+        elif force_type == 'One-Shot':
+            newValues['Corrected_Type'] = 'One-Shot'
+        elif force_type == 'Print':
             newValues['Corrected_Type'] = 'Print'
         else:
-            newValues['Corrected_Type'] = None
+            if orig_corr_type is not None:
+                newValues['Corrected_Type'] = orig_corr_type
+            else:
+                newValues['Corrected_Type'] = None
 
-        if orig_type != force_type:
-            if '$Type' in mylar.CONFIG.FOLDER_FORMAT and com_location == orig_location:
-                #rename folder to accomodate new forced TPB format.
+        if any([ignore_type == '0', ignore_type is None, ignore_type == 'None']):
+            newValues['IgnoreType'] = 0
+        else:
+            newValues['IgnoreType'] = 1
+
+        #logger.fdebug('orig_type:%s -- force_type: %s' % (orig_type, force_type))
+        #logger.fdebug('orig_corr_type: %s-- corrected_type: %s' % (orig_corr_type, newValues['Corrected_Type']))
+        #logger.fdebug('config_folder_format:%s' % (mylar.CONFIG.FOLDER_FORMAT))
+        #logger.fdebug('config_format_booktype:%s' % (mylar.CONFIG.FORMAT_BOOKTYPE))
+        #logger.fdebug('com_location:%s -- orig_location: %s' % (com_location, orig_location))
+        if orig_corr_type != newValues['Corrected_Type']:
+            if all(['$Type' in mylar.CONFIG.FOLDER_FORMAT, com_location == orig_location, mylar.CONFIG.FORMAT_BOOKTYPE is True]):
+                #rename folder if the $Type is in folder format to accomodate new forced format.
                 from . import filers
                 x = filers.FileHandlers(ComicID=ComicID)
                 newcom_location = x.folder_create(booktype=newValues['Corrected_Type'])
@@ -5556,7 +5634,7 @@ class WebInterface(object):
                     newznab_verify = kwargs['newznab_verify' + newznab_number]
                 except:
                     newznab_verify = 0
-                newznab_api = kwargs['newznab_api' + newznab_number]
+                newznab_apikey = kwargs['newznab_apikey' + newznab_number]
                 newznab_uid = kwargs['newznab_uid' + newznab_number]
                 try:
                     newznab_enabled = str(kwargs['newznab_enabled' + newznab_number])
@@ -5565,7 +5643,7 @@ class WebInterface(object):
 
                 del kwargs[kwarg]
 
-                mylar.CONFIG.EXTRA_NEWZNABS.append((newznab_name, newznab_host, newznab_verify, newznab_api, newznab_uid, newznab_enabled))
+                mylar.CONFIG.EXTRA_NEWZNABS.append((newznab_name, newznab_host, newznab_verify, newznab_apikey, newznab_uid, newznab_enabled))
 
         mylar.CONFIG.EXTRA_TORZNABS = []
 
@@ -5736,6 +5814,8 @@ class WebInterface(object):
         try:
             r = nzbserver.status()
         except Exception as e:
+            if all([nzbpassword is not None, nzbpassword in e]):
+                e = re.sub(nzbpassword, 'REDACTED', e)
             logger.warn('Error fetching data: %s' % e)
             return 'Unable to retrieve data from NZBGet'
         logger.info('Successfully verified connection to NZBGet at %s:%s' % (nzbgethost, nzbport))
@@ -5907,12 +5987,10 @@ class WebInterface(object):
             metadata_db = myDB.selectone('SELECT * FROM issues where IssueID=?', [issueid]).fetchone()
             seriestitle = meta_data['series']
             if any([seriestitle == 'None', seriestitle is None]):
-                seriestitle = urllib.parse.unquote_plus(comicname)
                 seriestitle = metadata_db['ComicName']
 
             issuenumber = meta_data['issue_number']
             if any([issuenumber == 'None', issuenumber is None]):
-                issuenumber = urllib.parse.unquote_plus(issue)
                 issuenumber = metadata_db['Issue_Number']
 
             issuetitle = meta_data['title']
