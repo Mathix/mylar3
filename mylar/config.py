@@ -12,7 +12,6 @@ import re
 import configparser
 import mylar
 from mylar import logger, helpers, encrypted
-import errno
 
 config = configparser.ConfigParser()
 
@@ -69,6 +68,8 @@ _CONFIG_DEFINITIONS = OrderedDict({
     'AUTOWANT_UPCOMING': (bool, 'General', True),
     'AUTOWANT_ALL': (bool, 'General', False),
     'COMIC_COVER_LOCAL': (bool, 'General', False),
+    'SERIES_METADATA_LOCAL': (bool, 'General', False),
+    'COVER_FOLDER_LOCAL': (bool, 'General', False),
     'ADD_TO_CSV': (bool, 'General', True),
     'SKIPPED2WANTED': (bool, 'General', False),
     'READ2FILENAME': (bool, 'General', False),
@@ -82,6 +83,9 @@ _CONFIG_DEFINITIONS = OrderedDict({
     'CLEANUP_CACHE': (bool, 'General', False),
     'SECURE_DIR': (str, 'General', None),
     'ENCRYPT_PASSWORDS': (bool, 'General', False),
+    'BACKUP_ON_START': (bool, 'General', False),
+    'BACKFILL_LENGTH': (int, 'General', 8),  # weeks
+    'BACKFILL_TIMESPAN': (int, 'General', 10),   # minutes
 
     'RSS_CHECKINTERVAL': (int, 'Scheduler', 20),
     'SEARCH_INTERVAL': (int, 'Scheduler', 360),
@@ -119,7 +123,7 @@ _CONFIG_DEFINITIONS = OrderedDict({
 
     'CVAPI_RATE' : (int, 'CV', 2),
     'COMICVINE_API': (str, 'CV', None),
-    'BLACKLISTED_PUBLISHERS' : (str, 'CV', None),
+    'IGNORED_PUBLISHERS' : (str, 'CV', ""),
     'CV_VERIFY': (bool, 'CV', True),
     'CV_ONLY': (bool, 'CV', True),
     'CV_ONETIMER': (bool, 'CV', True),
@@ -280,7 +284,7 @@ _CONFIG_DEFINITIONS = OrderedDict({
 
     'STORYARCDIR': (bool, 'StoryArc', False),
     'COPY2ARCDIR': (bool, 'StoryArc', False),
-    'ARC_FOLDERFORMAT': (str, 'StoryArc', None),
+    'ARC_FOLDERFORMAT': (str, 'StoryArc', '$arc ($spanyears)'),
     'ARC_FILEOPS': (str, 'StoryArc', 'copy'),
     'UPCOMING_STORYARCS': (bool, 'StoryArc', False),
     'SEARCH_STORYARCS': (bool, 'StoryArc', False),
@@ -396,6 +400,7 @@ _BAD_DEFINITIONS = OrderedDict({
     'SAB_CLIENT_POST_PROCESSING': ('SABnbzd', None),
     'ENABLE_PUBLIC': ('Torrents', 'ENABLE_TPSE'),
     'PUBLIC_VERIFY': ('Torrents', 'TPSE_VERIFY'),
+    'IGNORED_PUBLISHERS': ('CV', 'BLACKLISTED_PUBLISHERS'),
 })
 
 class Config(object):
@@ -443,20 +448,22 @@ class Config(object):
 
             for b, bv in _BAD_DEFINITIONS.items():
                 try:
-                    if config.has_section(bv[0]) and any([b == k, bv[1] is None]):
+                    if all([config.has_section(bv[0]), any([b == k, bv[1] is None])]) and not config.has_option(xv[2],xv[0]):
                         cvs = xv
                         if bv[1] is None:
                             ckey = k
                         else:
                             ckey = bv[1]
                         corevalues = [ckey if x == 0 else x for x in cvs]
-                        corevalues = [bv[0] if x == corevalues.index(bv[0]) else x for x in cvs]
+                        corevalues = [bv[1] if x == b else x for x in cvs]
                         value = self.check_setting(corevalues)
-                        if bv[1] is None:
-                            config.remove_option(bv[0], ckey.lower())
-                            config.remove_section(bv[0])
-                        else:
-                            config.remove_option(bv[0], bv[1].lower())
+                        if config.has_section(bv[0]):
+                            if bv[1] is None:
+                                config.remove_option(bv[0], ckey.lower())
+                                config.remove_section(bv[0])
+                            else:
+                                config.remove_option(bv[0], bv[1].lower())
+                            self.WRITE_THE_CONFIG = True
                         break
                 except:
                     pass
@@ -529,22 +536,7 @@ class Config(object):
         self.config_vals()
         setattr(self, 'EXTRA_NEWZNABS', self.get_extra_newznabs())
         setattr(self, 'EXTRA_TORZNABS', self.get_extra_torznabs())
-        if any([self.CONFIG_VERSION == 0, self.CONFIG_VERSION < self.newconfig]):
-            try:
-                shutil.move(self._config_file, os.path.join(mylar.DATA_DIR, 'config.ini.backup'))
-            except:
-                print(('Unable to make proper backup of config file in %s' % os.path.join(mylar.DATA_DIR, 'config.ini.backup')))
-            if self.CONFIG_VERSION < 10:
-                print('Attempting to update configuration..')
-                #8-torznab multiple entries merged into extra_torznabs value
-                #9-remote rtorrent ssl option
-                #10-encryption of all keys/passwords.
-                self.config_update()
-            setattr(self, 'CONFIG_VERSION', str(self.newconfig))
-            config.set('General', 'CONFIG_VERSION', str(self.newconfig))
-            self.writeconfig()
-        else:
-            self.provider_sequence()
+        setattr(self, 'IGNORED_PUBLISHERS', self.get_ignored_pubs())
 
         if startup is True:
             if self.LOG_DIR is None:
@@ -559,36 +551,60 @@ class Config(object):
                         print('Unable to create the log directory. Logging to screen only.')
 
             # Start the logger, silence console logging if we need to
-            if logger.LOG_LANG.startswith('en'):
-                logger.initLogger(console=not mylar.QUIET, log_dir=self.LOG_DIR, max_logsize=self.MAX_LOGSIZE, max_logfiles=self.MAX_LOGFILES, loglevel=mylar.LOG_LEVEL)
-            else:
-                if self.LOG_LEVEL != mylar.LOG_LEVEL:
-                    print(('Logging level over-ridden by startup value. Changing from %s to %s' % (self.LOG_LEVEL, mylar.LOG_LEVEL)))
-                logger.mylar_log.initLogger(loglevel=mylar.LOG_LEVEL, log_dir=self.LOG_DIR, max_logsize=self.MAX_LOGSIZE, max_logfiles=self.MAX_LOGFILES)
+            # quick check to make sure log_level isn't just blank in the config
+            if self.LOG_LEVEL is None:
+                self.LOG_LEVEL = 1  #default it to INFO level (1) if not set.
 
+            log_level = self.LOG_LEVEL
+            if mylar.LOG_LEVEL is not None:
+                log_level = mylar.LOG_LEVEL
+                print('Logging level in config over-ridden by startup value. Logging level set to : %s' % (log_level))
+
+            mylar.LOG_LEVEL = log_level # set this to the calculated log_leve value so that logs display fine in the GUI
+            if logger.LOG_LANG.startswith('en'):
+                logger.initLogger(console=not mylar.QUIET, log_dir=self.LOG_DIR, max_logsize=self.MAX_LOGSIZE, max_logfiles=self.MAX_LOGFILES, loglevel=log_level)
+            else:
+                logger.mylar_log.initLogger(loglevel=log_level, log_dir=self.LOG_DIR, max_logsize=self.MAX_LOGSIZE, max_logfiles=self.MAX_LOGFILES)
+
+        if any([self.CONFIG_VERSION == 0, self.CONFIG_VERSION < self.newconfig]):
+            try:
+                shutil.move(self._config_file, os.path.join(mylar.DATA_DIR, 'config.ini.backup'))
+            except:
+                logger.warn('Unable to make proper backup of config file in %s' % os.path.join(mylar.DATA_DIR, 'config.ini.backup'))
+            if self.CONFIG_VERSION < 10:
+                logger.info('Attempting to update configuration..')
+                #8-torznab multiple entries merged into extra_torznabs value
+                #9-remote rtorrent ssl option
+                #10-encryption of all keys/passwords.
+                self.config_update()
+            setattr(self, 'CONFIG_VERSION', str(self.newconfig))
+            config.set('General', 'CONFIG_VERSION', str(self.newconfig))
+            self.writeconfig()
+
+        self.provider_sequence()
         self.configure(startup=startup)
         if self.WRITE_THE_CONFIG is True:
             self.writeconfig()
         return self
 
     def config_update(self):
-        print(('Updating Configuration from %s to %s' % (self.CONFIG_VERSION, self.newconfig)))
+        logger.info('Updating Configuration from %s to %s' % (self.CONFIG_VERSION, self.newconfig))
         if self.CONFIG_VERSION < 8:
-            print('Checking for existing torznab configuration...')
+            logger.info('Checking for existing torznab configuration...')
             if not any([self.TORZNAB_NAME is None, self.TORZNAB_HOST is None, self.TORZNAB_APIKEY is None, self.TORZNAB_CATEGORY is None]):
                 torznabs =[(self.TORZNAB_NAME, self.TORZNAB_HOST, self.TORZNAB_VERIFY, self.TORZNAB_APIKEY, self.TORZNAB_CATEGORY, str(int(self.ENABLE_TORZNAB)))]
                 setattr(self, 'EXTRA_TORZNABS', torznabs)
                 config.set('Torznab', 'EXTRA_TORZNABS', str(torznabs))
-                print('Successfully converted existing torznab for multiple configuration allowance. Removing old references.')
+                logger.info('Successfully converted existing torznab for multiple configuration allowance. Removing old references.')
             else:
-                print('No existing torznab configuration found. Just removing config references at this point..')
+                logger.info('No existing torznab configuration found. Just removing old config references at this point..')
             config.remove_option('Torznab', 'torznab_name')
             config.remove_option('Torznab', 'torznab_host')
             config.remove_option('Torznab', 'torznab_verify')
             config.remove_option('Torznab', 'torznab_apikey')
             config.remove_option('Torznab', 'torznab_category')
             config.remove_option('Torznab', 'torznab_verify')
-            print('Successfully removed outdated config entries.')
+            logger.info('Successfully removed outdated config entries.')
         if self.newconfig < 9:
             #rejig rtorrent settings due to change.
             try:
@@ -598,7 +614,7 @@ class Config(object):
             except:
                 pass
             config.remove_option('Rtorrent', 'rtorrent_ssl')
-            print('Successfully removed oudated config entries.')
+            logger.info('Successfully removed oudated config entries.')
         if self.newconfig < 10:
             #encrypt all passwords / apikeys / usernames in ini file.
             #leave non-ini items (ie. memory) as un-encrypted items.
@@ -606,9 +622,9 @@ class Config(object):
                 if self.ENCRYPT_PASSWORDS is True:
                     self.encrypt_items(mode='encrypt', updateconfig=True)
             except Exception as e:
-                print(('Error: %s' % e))
-            print('Successfully updated config to version 10 ( password / apikey - .ini encryption )')
-        print(('Configuration upgraded to version %s' % self.newconfig))
+                logger.error('Error: %s' % e)
+            logger.info('Successfully updated config to version 10 ( password / apikey - .ini encryption )')
+        logger.info('Configuration upgraded to version %s' % self.newconfig)
 
     def check_section(self, section, key):
         """ Check if INI section exists, if not create it """
@@ -767,14 +783,17 @@ class Config(object):
         config.set('Torznab', 'extra_torznabs', ', '.join(self.write_extras(self.EXTRA_TORZNABS)))
 
         ###this should be moved elsewhere...
-        if type(self.BLACKLISTED_PUBLISHERS) != list:
-            if self.BLACKLISTED_PUBLISHERS is None:
+        if type(self.IGNORED_PUBLISHERS) != list:
+            if self.IGNORED_PUBLISHERS is None:
                 bp = 'None'
             else:
-                bp = ', '.join(self.write_extras(self.BLACKLISTED_PUBLISHERS))
-            config.set('CV', 'blacklisted_publishers', bp)
+                if ',,' in self.IGNORED_PUBLISHERS:
+                    bp = 'None'
+                else:
+                    bp = ', '.join(self.IGNORED_PUBLISHERS)
+            config.set('CV', 'ignored_publishers', bp)
         else:
-            config.set('CV', 'blacklisted_publishers', ', '.join(self.BLACKLISTED_PUBLISHERS))
+            config.set('CV', 'ignored_publishers', ', '.join(self.IGNORED_PUBLISHERS))
         ###
         config.set('General', 'dynamic_update', str(self.DYNAMIC_UPDATE))
 
@@ -957,6 +976,9 @@ class Config(object):
             self.GRABBAG_DIR = os.path.join(self.DESTINATION_DIR, 'Grabbag')
             logger.fdebug('[Grabbag Directory] Setting One-Off directory to default location: %s' % self.GRABBAG_DIR)
 
+        if self.ARC_FOLDERFORMAT is None:
+            self.ARC_FOLDERFORMAT = '$arc ($spanyears)'
+
         ## Sanity checking
         if any([self.COMICVINE_API is None, self.COMICVINE_API == 'None', self.COMICVINE_API == '']):
             logger.error('No User Comicvine API key specified. I will not work very well due to api limits - http://api.comicvine.com/ and get your own free key.')
@@ -979,6 +1001,11 @@ class Config(object):
         elif self.ENABLE_RSS is False and mylar.RSS_STATUS == 'Waiting':
             mylar.RSS_STATUS = 'Paused'
 
+        if self.DUPECONSTRAINT is None:
+            #default dupecontraint to filesize
+            setattr(self, 'DUPECONSTRAINT', 'filesize')
+            config.set('Duplicates', 'dupeconstraint', 'filesize')
+
         if not helpers.is_number(self.CHMOD_DIR):
             logger.fdebug("CHMOD Directory value is not a valid numeric - please correct. Defaulting to 0777")
             self.CHMOD_DIR = '0777'
@@ -994,8 +1021,10 @@ class Config(object):
             #we can't have metatagging enabled with hard/soft linking. Forcibly disable it here just in case it's set on load.
             self.ENABLE_META = False
 
-        if self.BLACKLISTED_PUBLISHERS is not None and type(self.BLACKLISTED_PUBLISHERS) == str:
-            setattr(self, 'BLACKLISTED_PUBLISHERS', self.BLACKLISTED_PUBLISHERS.split(', '))
+        if all([self.IGNORED_PUBLISHERS is not None, self.IGNORED_PUBLISHERS != '']):
+            logger.info('Ignored Publishers: %s' % self.IGNORED_PUBLISHERS)
+            if type(self.IGNORED_PUBLISHERS) == str:
+                setattr(self, 'ignored_PUBLISHERS', self.IGNORED_PUBLISHERS.split(', '))
 
         if all([self.AUTHENTICATION == 0, self.HTTP_USERNAME is not None, self.HTTP_PASSWORD is not None]):
             #set it to the default login prompt if nothing selected.
@@ -1005,7 +1034,6 @@ class Config(object):
 
         if self.ENCRYPT_PASSWORDS is True:
             self.encrypt_items(mode='decrypt')
-
         if all([self.IGNORE_TOTAL is True, self.IGNORE_HAVETOTAL is True]):
             self.IGNORE_TOTAL = False
             self.IGNORE_HAVETOTAL = False
@@ -1013,7 +1041,7 @@ class Config(object):
 
         #comictagger - force to use included version if option is enabled.
         import comictaggerlib.ctversion as ctversion
-        logger.info('[COMICTAGGER] Version detected: %s' % ctversion.version) 
+        logger.info('[COMICTAGGER] Version detected: %s' % ctversion.version)
         if self.ENABLE_META:
             mylar.CMTAGGER_PATH = mylar.PROG_DIR
 
@@ -1029,6 +1057,7 @@ class Config(object):
                 #windows won't be able to create in ~, so force it to DATA_DIR
                 if mylar.OS_DETECT == 'Windows':
                     ct_path = mylar.DATA_DIR
+                    chkpass = True
                 else:
                     ct_path = str(pathlib.Path(os.path.expanduser("~")))
                     try:
@@ -1174,6 +1203,16 @@ class Config(object):
     def get_extra_torznabs(self):
         extra_torznabs = list(zip(*[iter(self.EXTRA_TORZNABS.split(', '))]*6))
         return extra_torznabs
+
+    def get_ignored_pubs(self):
+        if all([self.IGNORED_PUBLISHERS is not None, self.IGNORED_PUBLISHERS != '', len(self.IGNORED_PUBLISHERS) != 0]):
+            if not ',,' in self.IGNORED_PUBLISHERS:
+                ignored_pubs = [x.strip() for x in self.IGNORED_PUBLISHERS.split(',')]
+            else:
+                ignored_pubs = []
+        else:
+            ignored_pubs = []
+        return ignored_pubs
 
     def provider_sequence(self):
         PR = []

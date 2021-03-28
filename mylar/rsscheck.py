@@ -26,6 +26,7 @@ import time
 import random
 from bs4 import BeautifulSoup
 from io import StringIO
+from pkg_resources import parse_version
 
 import mylar
 from mylar import db, logger, ftpsshup, helpers, auth32p, utorrent, helpers
@@ -49,7 +50,10 @@ def _start_newznab_attr(self, attrsD):
     else:
         context['newznab'][name] = value
 
-feedparser._FeedParserMixin._start_newznab_attr = _start_newznab_attr
+if parse_version(feedparser.__version__) < parse_version('6.0.0'):
+    feedparser._FeedParserMixin._start_newznab_attr = _start_newznab_attr
+else:
+    feedparser.mixin._FeedParserMixin._start_newznab_attr = _start_newznab_attr
 
 def torrents(pickfeed=None, seriesname=None, issue=None, feedinfo=None):
     if pickfeed is None:
@@ -398,12 +402,11 @@ def ddl(forcerss=False):
     else:
         if r.status_code != 200:
             #typically 403 will not return results, but just catch anything other than a 200
-            if r.status_code == 403:
-                logger.warn('ERROR - status code:%s' % r.status_code)
-                return False
+            if r.status_code == 503:
+                logger.warn('[ERROR - Cloudflare is probably active] Status code returned: %s' % r.status_code)
             else:
-                logger.warn('[%s] Status code returned: %s' % (r.status_code))
-                return False
+                logger.warn('[ERROR] Status code returned: %s' % r.status_code)
+            return False
 
         feedme = feedparser.parse(r.content)
         results = []
@@ -514,7 +517,7 @@ def nzbs(provider=None, forcerss=False):
         if mylar.CONFIG.NZBSU == 1:
             num_items = "&num=100" if forcerss else ""  # default is 25
             params = {'t':        '7030',
-                      'dl':        '1', 
+                      'dl':        '1',
                       'i':         mylar.CONFIG.NZBSU_UID,
                       'r':         mylar.CONFIG.NZBSU_APIKEY,
                       'num_items': num_items}
@@ -523,12 +526,14 @@ def nzbs(provider=None, forcerss=False):
                 helpers.disable_provider(site)
 
         if mylar.CONFIG.DOGNZB == 1:
-            num_items = "&num=100" if forcerss else ""  # default is 25
-            params = {'t':        '7030',
-                      'r':         mylar.CONFIG.DOGNZB_APIKEY,
-                      'num_items': num_items}
+            #default is 100
+            params = {'cat':        '7030',
+                      'o':          'xml',
+                      'apikey':     mylar.CONFIG.DOGNZB_APIKEY,
+                      't':          'search',
+                      'dl':         '1'}
 
-            check = _parse_feed('dognzb', 'https://dognzb.cr/rss.cfm', mylar.CONFIG.DOGNZB_VERIFY, params)
+            check = _parse_feed('dognzb', 'https://api.dognzb.cr/api', mylar.CONFIG.DOGNZB_VERIFY, params)
             if check == 'disable':
                 helpers.disable_provider(site)
 

@@ -17,7 +17,7 @@ import sys
 import os
 import re
 import time
-from mylar import logger
+from mylar import logger, helpers
 import string
 import feedparser
 import mylar
@@ -27,7 +27,7 @@ from xml.parsers.expat import ExpatError
 import http.client
 import requests
 
-def pulldetails(comicid, type, issueid=None, offset=1, arclist=None, comicidlist=None):
+def pulldetails(comicid, rtype, issueid=None, offset=1, arclist=None, comicidlist=None, dateinfo=None):
     #import easy to use xml parser called minidom:
     from xml.dom.minidom import parseString
 
@@ -37,34 +37,36 @@ def pulldetails(comicid, type, issueid=None, offset=1, arclist=None, comicidlist
     else:
         comicapi = mylar.CONFIG.COMICVINE_API
 
-    if type == 'comic':
+    if rtype == 'comic':
         if not comicid.startswith('4050-'): comicid = '4050-' + comicid
         PULLURL = mylar.CVURL + 'volume/' + str(comicid) + '/?api_key=' + str(comicapi) + '&format=xml&field_list=name,count_of_issues,issues,start_year,site_detail_url,image,publisher,description,first_issue,deck,aliases'
-    elif type == 'issue':
+    elif rtype == 'issue':
         if mylar.CONFIG.CV_ONLY:
-            cv_type = 'issues'
+            cv_rtype = 'issues'
             if arclist is None:
                 searchset = 'filter=volume:' + str(comicid) + '&field_list=cover_date,description,id,image,issue_number,name,date_last_updated,store_date'
             else:
                 searchset = 'filter=id:' + (arclist) + '&field_list=cover_date,id,issue_number,name,date_last_updated,store_date,volume'
         else:
-            cv_type = 'volume/' + str(comicid)
+            cv_rtype = 'volume/' + str(comicid)
             searchset = 'name,count_of_issues,issues,start_year,site_detail_url,image,publisher,description,store_date'
-        PULLURL = mylar.CVURL + str(cv_type) + '/?api_key=' + str(comicapi) + '&format=xml&' + str(searchset) + '&offset=' + str(offset)
-    elif any([type == 'image', type == 'firstissue']):
+        PULLURL = mylar.CVURL + str(cv_rtype) + '/?api_key=' + str(comicapi) + '&format=xml&' + str(searchset) + '&offset=' + str(offset)
+    elif any([rtype == 'image', rtype == 'firstissue']):
         #this is used ONLY for CV_ONLY
         PULLURL = mylar.CVURL + 'issues/?api_key=' + str(comicapi) + '&format=xml&filter=id:' + str(issueid) + '&field_list=cover_date,image'
-    elif type == 'storyarc':
+    elif rtype == 'storyarc':
         PULLURL = mylar.CVURL + 'story_arcs/?api_key=' + str(comicapi) + '&format=xml&filter=name:' + str(issueid) + '&field_list=cover_date'
-    elif type == 'comicyears':
-        PULLURL = mylar.CVURL + 'volumes/?api_key=' + str(comicapi) + '&format=xml&filter=id:' + str(comicidlist) + '&field_list=name,id,start_year,publisher,description,deck,aliases&offset=' + str(offset)
-    elif type == 'import':
+    elif rtype == 'comicyears':
+        PULLURL = mylar.CVURL + 'volumes/?api_key=' + str(comicapi) + '&format=xml&filter=id:' + str(comicidlist) + '&field_list=name,id,start_year,publisher,description,deck,aliases,count_of_issues&offset=' + str(offset)
+    elif rtype == 'import':
         PULLURL = mylar.CVURL + 'issues/?api_key=' + str(comicapi) + '&format=xml&filter=id:' + (comicidlist) + '&field_list=cover_date,id,issue_number,name,date_last_updated,store_date,volume' + '&offset=' + str(offset)
-    elif type == 'update_dates':
+    elif rtype == 'update_dates':
         PULLURL = mylar.CVURL + 'issues/?api_key=' + str(comicapi) + '&format=xml&filter=id:' + (comicidlist)+ '&field_list=date_last_updated, id, issue_number, store_date, cover_date, name, volume ' + '&offset=' + str(offset)
-    elif type == 'single_issue':
+    elif rtype == 'single_issue':
         #this is used for retrieving single issue metadata for use when displaying metadata information for a selected issue.
         PULLURL = mylar.CVURL + 'issue/4000-' + str(issueid) + '?api_key=' + str(comicapi) + '&format=json'
+    elif rtype == 'db_updater':
+        PULLURL = mylar.CVURL + 'issues/?api_key=' + str(comicapi) + '&format=json&filter=date_last_updated:'+dateinfo['start_date']+'|'+dateinfo['end_date']+'&field_list=date_last_updated,id,volume,issue_number&sort=date_last_updated:asc&offset=' + str(offset)
     #logger.info('CV.PULLURL: ' + PULLURL)
     #new CV API restriction - one api request / second.
     if mylar.CONFIG.CVAPI_RATE is None or mylar.CONFIG.CVAPI_RATE < 2:
@@ -85,28 +87,29 @@ def pulldetails(comicid, type, issueid=None, offset=1, arclist=None, comicidlist
 
     mylar.BACKENDSTATUS_CV = 'up'
     #logger.fdebug('cv status code : ' + str(r.status_code))
+    #logger.fdebug('rtype: %s' % rtype)
     try:
-        if type == 'single_issue':
+        if any([rtype == 'single_issue', rtype == 'db_updater']):
             dom = r.json()
             #logger.info('cv_data returned: %s' % dom)
         else:
             dom = parseString(r.content)
     except ExpatError:
-        if '<title>Abnormal Traffic Detected' in r.content:
+        if '<title>Abnormal Traffic Detected' in r.content.decode('utf-8'):
             logger.error('ComicVine has banned this server\'s IP address because it exceeded the API rate limit.')
         else:
             logger.warn('[WARNING] ComicVine is not responding correctly at the moment. This is usually due to some problems on their end. If you re-try things again in a few moments, things might work')
             mylar.BACKENDSTATUS_CV = 'down'
         return
     except Exception as e:
-        logger.warn('[ERROR] Error returned from CV: %s' % e)
+        logger.warn('[ERROR] Error returned from CV: %s [%s]' % (e, r.content))
         mylar.BACKENDSTATUS_CV = 'down'
         return
     else:
         return dom
 
-def getComic(comicid, type, issueid=None, arc=None, arcid=None, arclist=None, comicidlist=None):
-    if type == 'issue':
+def getComic(comicid, rtype, issueid=None, arc=None, arcid=None, arclist=None, comicidlist=None, dateinfo=None, series=False):
+    if rtype == 'issue':
         offset = 1
         issue = {}
         ndic = []
@@ -139,7 +142,9 @@ def getComic(comicid, type, issueid=None, arc=None, arcid=None, arclist=None, co
             return False
         countResults = 0
         while (countResults < int(totalResults)):
-            logger.fdebug("querying range from " + str(countResults) + " to " + str(countResults + 100))
+            logger.fdebug('Querying & compiling from %s - %s out of %s results'
+                % (countResults, countResults + 100, totalResults)
+            )
             if countResults > 0:
                 #new api - have to change to page # instead of offset count
                 offsetcount = countResults
@@ -155,22 +160,22 @@ def getComic(comicid, type, issueid=None, arc=None, arcid=None, arclist=None, co
         issue['firstdate'] = firstdate
         return issue
 
-    elif type == 'comic':
+    elif rtype == 'comic':
         dom = pulldetails(comicid, 'comic', None, 1)
-        return GetComicInfo(comicid, dom)
-    elif any([type == 'image', type == 'firstissue']):
-        dom = pulldetails(comicid, type, issueid, 1)
-        return Getissue(issueid, dom, type)
-    elif type == 'storyarc':
+        return GetComicInfo(comicid, dom, series=series)
+    elif any([rtype == 'image', rtype == 'firstissue']):
+        dom = pulldetails(comicid, rtype, issueid, 1)
+        return Getissue(issueid, dom, rtype)
+    elif rtype == 'storyarc':
         dom = pulldetails(arc, 'storyarc', None, 1)
         return GetComicInfo(issueid, dom)
-    elif type == 'comicyears':
+    elif rtype == 'comicyears':
         #used by the story arc searcher when adding a given arc to poll each ComicID in order to populate the Series Year & volume (hopefully).
         #this grabs each issue based on issueid, and then subsets the comicid for each to be used later.
         #set the offset to 0, since we're doing a filter.
         dom = pulldetails(arcid, 'comicyears', offset=0, comicidlist=comicidlist)
         return GetSeriesYears(dom)
-    elif type == 'import':
+    elif rtype == 'import':
         #used by the importer when doing a scan with metatagging enabled. If metatagging comes back true, then there's an IssueID present
         #within the tagging (with CT). This compiles all of the IssueID's during a scan (in 100's), and returns the corresponding CV data
         #related to the given IssueID's - namely ComicID, Name, Volume (more at some point, but those are the important ones).
@@ -208,14 +213,51 @@ def getComic(comicid, type, issueid=None, arc=None, arcid=None, arclist=None, co
 
         return import_list
 
-    elif type == 'update_dates':
+    elif rtype == 'update_dates':
         dom = pulldetails(None, 'update_dates', offset=1, comicidlist=comicidlist)
         return UpdateDates(dom)
-    elif type == 'single_issue':
+    elif rtype == 'single_issue':
         dom = pulldetails(comicid, 'single_issue', issueid=issueid, offset=1, arclist=None, comicidlist=None)
         return singleIssue(dom)
+    elif rtype == 'db_updater':
+        dateline = {'start_date': dateinfo,
+                    'end_date': helpers.now()}
+        offset = 1
+        resultlist = {}
+        theResults = []
 
-def GetComicInfo(comicid, dom, safechk=None):
+        resultlist = pulldetails(None, 'db_updater', offset=0, dateinfo=dateline)
+
+        totalResults = resultlist['number_of_total_results']
+        logger.fdebug('There are %s total results' % totalResults)
+
+        if not totalResults:
+            return {'count': 0, 'results': [], 'totalcount': 0}
+
+        overallResults = totalResults
+        if totalResults > 1500:
+            # force set this here and we'll stagger the remainder over the next hr + depending on size.
+            totalResults = 1500
+
+        countResults = 0
+        while (countResults < int(totalResults)):
+            logger.fdebug('Querying & compiling from %s - %s out of %s results'
+                % (countResults, countResults + 100, totalResults)
+            )
+            if countResults > 0:
+                #new api - have to change to page # instead of offset count
+                offsetcount = countResults
+                resultlist = pulldetails(None, 'db_updater', offset=offsetcount, dateinfo=dateline)
+            resultlist = db_updates(resultlist)
+            theResults = theResults + resultlist
+            #search results are limited to 100 and by pagination now...let's account for this.
+            countResults = countResults + 100
+
+        return {'count': len(theResults),
+                'results': theResults,
+                'totalcount': overallResults}
+
+def GetComicInfo(comicid, dom, safechk=None, series=False):
     if safechk is None:
         #safetycheck when checking comicvine. If it times out, increment the chk on retry attempts up until 5 tries then abort.
         safechk = 1
@@ -224,7 +266,11 @@ def GetComicInfo(comicid, dom, safechk=None):
         return
     #comicvine isn't as up-to-date with issue counts..
     #so this can get really buggered, really fast.
-    tracks = dom.getElementsByTagName('issue')
+    try:
+       tracks = dom.getElementsByTagName('issue')
+    except:
+       logger.error('Unable to add / refresh the series due to inablity to retrieve data from ComicVine. You might want to try abit later and/or make sure ComicVine is up.')
+       return
     try:
         cntit = dom.getElementsByTagName('count_of_issues')[0].firstChild.wholeText
     except:
@@ -264,9 +310,9 @@ def GetComicInfo(comicid, dom, safechk=None):
             elif dom.getElementsByTagName('name')[n].parentNode.nodeName == 'publisher':
                 try:
                     comic['ComicPublisher'] = dom.getElementsByTagName('name')[n].firstChild.wholeText
-                except:
+                except Exception as e:
+                    logger.error('error encountered: %s' % e)
                     comic['ComicPublisher'] = "Unknown"
-
             n += 1
     except:
         logger.warn('Something went wrong retrieving from ComicVine. Ensure your API is up-to-date and that comicvine is accessible')
@@ -280,6 +326,80 @@ def GetComicInfo(comicid, dom, safechk=None):
     #safety check, cause you known, dufus'...
     if any([comic['ComicYear'][-1:] == '-', comic['ComicYear'][-1:] == '?']):
         comic['ComicYear'] = comic['ComicYear'][:-1]
+
+    found = False
+    comicPublisher = comic['ComicPublisher']
+    publisherImprint= None
+
+    if series is True:
+        # this is a really crappy way to do it - it works, but meh.
+        try:
+            for k,v in mylar.PUBLISHER_IMPRINTS.items():
+                if k == 'publishers':
+                    for b in v:
+                        for d,e in b.items():
+                            for g in e:
+                                chkyear = False
+                                for f,h in g.items():
+                                    if f == 'name':
+                                        pubname = h
+                                    if f == 'publication_run' and chkyear is True:
+                                        pubrun = h
+                                        y = pubrun.find('-')
+                                        pub_start = pubrun[:y][:4].strip()
+                                        pub_end = pubrun[y+2:][:4].strip()
+                                        if len(pub_end) == 0 and len(pub_start) == 0:
+                                            chkyear = False
+                                            found = False
+                                            continue
+                                        elif len(pub_end) == 0:
+                                            pub_end = None
+                                            if int(comic['ComicYear']) < int(pub_start[:4]):
+                                                logger.info('comic year of %s is prior to imprint publication date of %s' % (comic['ComicYear'], pub_start[:4]))
+                                                comic['ComicPublisher'] = None
+                                                comic['PublisherImprint'] = None
+                                                found = False
+                                            else:
+                                                found = True
+                                        else:
+                                            if int(pub_end[:4]) > int(comic['ComicYear'])  > int(pub_start[:4]):
+                                                found = True
+                                            else:
+                                                logger.info('comic year of %s is not within the imprint publication date range of %s - %s' % (comic['ComicYear'], pub_start[:4], pub_end[:4]))
+                                                comicPublisher = None
+                                                publisherImprint = None
+                                                found = False
+                                        chkyear = False
+
+                                    elif f == 'imprints' and h is not None:
+                                        # if we get here, it's an imprint of an imprint
+                                        for i in h:
+                                            if i['name'].lower() == comic['ComicPublisher'].lower():
+                                                logger.info('imprint matched: %s ---> %s' % (i['name'],h))
+                                                comicPublisher = pubname
+                                                publisherImprint = i['name']
+                                                found = True
+                                                break
+                                    elif all([f != 'imprints', f != 'publication_run']) and h is not None:
+                                        if h.lower() == comic['ComicPublisher'].lower():
+                                            logger.info('imprint matched: %s ---> %s' % (d, h))
+                                            comicPublisher = d
+                                            publisherImprint = h
+                                            chkyear = True
+                                            found = True
+
+                                if found is True:
+                                    break
+                            if found is True:
+                                break
+                        if found is True:
+                            break
+        except Exception as e:
+            logger.error('error: %s' % e)
+
+    if comicPublisher is not None:
+        comic['ComicPublisher'] = comicPublisher
+    comic['PublisherImprint'] = publisherImprint
 
     try:
         comic['ComicURL'] = dom.getElementsByTagName('site_detail_url')[trackcnt].firstChild.wholeText
@@ -310,7 +430,7 @@ def GetComicInfo(comicid, dom, safechk=None):
     except:
         comic_deck = 'None'
 
-    #comic['ComicDescription'] = comic_desc
+    comic['ComicDescription'] = comic_desc
 
     try:
         comic['Aliases'] = dom.getElementsByTagName('aliases')[0].firstChild.wholeText
@@ -452,6 +572,7 @@ def GetComicInfo(comicid, dom, safechk=None):
     else:
         comic['Issue_List'] = 'None'
 
+    comic['incorrect_volume'] = None
     while (desdeck > 0):
         if desdeck == 1:
             if comic_desc == 'None':
@@ -467,12 +588,23 @@ def GetComicInfo(comicid, dom, safechk=None):
 
         i = 0
         while (i < 2):
+            incorrect_volume = None
             if 'volume' in comicDes.lower():
                 #found volume - let's grab it.
                 v_find = comicDes.lower().find('volume')
                 #arbitrarily grab the next 10 chars (6 for volume + 1 for space + 3 for the actual vol #)
                 #increased to 10 to allow for text numbering (+5 max)
                 #sometimes it's volume 5 and ocassionally it's fifth volume.
+                if 'collected' in comicDes.lower():
+                    cde = re.sub(r'[\s\-]', '', comicDes).strip().lower()
+                    if (
+                           'oneshot' in cde[:cde.find('collected')]
+                           and cde.find('volume') > cde.find('collected')
+                    ):
+                        # we set the incorrect_volume here so that when it returns to update the db we can
+                        # check to see if it matches the existing volume and if so replace it with any new
+                        # values since the incorrect volume is incorrect.
+                        incorrect_volume = comicDes[v_find:v_find+15]
                 if comicDes[v_find+7:comicDes.find(' ', v_find+7)].isdigit():
                     comic['ComicVersion'] = re.sub("[^0-9]", "", comicDes[v_find+7:comicDes.find(' ', v_find+7)]).strip()
                     break
@@ -484,6 +616,7 @@ def GetComicInfo(comicid, dom, safechk=None):
                     vfind = comicDes[:v_find]   # if it's fifth volume format
                     basenums = {'zero': '0', 'first': '1', 'second': '2', 'third': '3', 'fourth': '4', 'fifth': '5', 'sixth': '6', 'seventh': '7', 'eighth': '8', 'nineth': '9', 'tenth': '10', 'i': '1', 'ii': '2', 'iii': '3', 'iv': '4', 'v': '5'}
                     logger.fdebug('X volume format - ' + str(i) + ': ' + vfind)
+                og_vfind = vfind
                 volconv = ''
                 for nums in basenums:
                     if nums in vfind.lower():
@@ -509,9 +642,14 @@ def GetComicInfo(comicid, dom, safechk=None):
                 try:
                     ledigit = re.sub("[^0-9]", "", vf[0])
                     if ledigit != '':
-                        comic['ComicVersion'] = ledigit
-                        logger.fdebug("Volume information found! Adding to series record : volume " + comic['ComicVersion'])
-                        break
+                        #logger.info('incorrect_volume: %s / vfind: %s' % (incorrect_volume, og_vfind))
+                        if all([incorrect_volume is not None, incorrect_volume == og_vfind]):
+                            logger.fdebug('previous incorrect volume possible. Assigning incorrect value as: %s' % ledigit)
+                            comic['incorrect_volume'] = ledigit
+                        else:
+                            comic['ComicVersion'] = ledigit
+                            logger.fdebug("Volume information found! Adding to series record : volume " + comic['ComicVersion'])
+                            break
                 except:
                     pass
 
@@ -530,8 +668,23 @@ def GetComicInfo(comicid, dom, safechk=None):
     else:
         comic['ComicIssues'] = dom.getElementsByTagName('count_of_issues')[0].firstChild.wholeText
 
-    comic['ComicImage'] = dom.getElementsByTagName('super_url')[0].firstChild.wholeText
-    comic['ComicImageALT'] = dom.getElementsByTagName('small_url')[0].firstChild.wholeText
+    try:
+        comic['ComicImage'] = dom.getElementsByTagName('super_url')[0].firstChild.wholeText
+    except:
+        try:
+            comic['ComicImage'] = dom.getElementByTagName('original_url')[0].firstChild.wholeText
+        except:
+            comic['ComicImage'] = 'None'
+
+    try:
+        comic['ComicImageALT'] = dom.getElementsByTagName('small_url')[0].firstChild.wholeText
+    except:
+        comic['ComicImageALT'] = 'None'
+
+    try:
+        comic['ComicImageThumbnail'] = dom.getElementsByTagName('icon_url')[0].firstChild.wholeText
+    except:
+        comic['ComicImageThumbnail'] = 'None'
 
     comic['FirstIssueID'] = dom.getElementsByTagName('id')[0].firstChild.wholeText
 
@@ -668,9 +821,9 @@ def GetIssuesInfo(comicid, dom, arcid=None):
     #issue['firstdate'] = firstdate
     return issuech, firstdate
 
-def Getissue(issueid, dom, type):
+def Getissue(issueid, dom, rtype):
     #if the Series Year doesn't exist, get the first issue and take the date from that
-    if type == 'firstissue':
+    if rtype == 'firstissue':
         try:
             first_year = dom.getElementsByTagName('cover_date')[0].firstChild.wholeText
         except:
@@ -701,6 +854,8 @@ def GetSeriesYears(dom):
     tempseries = {}
     serieslist = []
     for dm in series:
+        # we need to know # of issues in a given series to force the type if required based on number of issues published to date.
+        number_issues = dm.getElementsByTagName('count_of_issues')[0].firstChild.wholeText
         try:
             totids = len(dm.getElementsByTagName('id'))
             idc = 0
@@ -773,7 +928,7 @@ def GetSeriesYears(dom):
         tempseries['Type'] = 'None'
         if comic_deck != 'None':
             if any(['print' in comic_deck.lower(), 'digital' in comic_deck.lower(), 'paperback' in comic_deck.lower(), 'one shot' in re.sub('-', '', comic_deck.lower()).strip(), 'hardcover' in comic_deck.lower()]):
-                if 'print' in comic_deck.lower():
+                if all(['print' in comic_deck.lower(), 'reprint' not in comic_deck.lower()]):
                     tempseries['Type'] = 'Print'
                 elif 'digital' in comic_deck.lower():
                     tempseries['Type'] = 'Digital'
@@ -783,9 +938,11 @@ def GetSeriesYears(dom):
                     tempseries['Type'] = 'HC'
                 elif 'oneshot' in re.sub('-', '', comic_deck.lower()).strip():
                     tempseries['Type'] = 'One-Shot'
+                else:
+                    tempseries['Type'] = 'Print'
 
         if comic_desc != 'None' and tempseries['Type'] == 'None':
-            if 'print' in comic_desc[:60].lower() and 'print edition can be found' not in comic_desc.lower():
+            if 'print' in comic_desc[:60].lower() and all(['for the printed edition' not in comic_desc.lower(), 'print edition can be found' not in comic_desc.lower(), 'reprints' not in comic_desc.lower()]):
                 tempseries['Type'] = 'Print'
             elif 'digital' in comic_desc[:60].lower() and 'digital edition can be found' not in comic_desc.lower():
                 tempseries['Type'] = 'Digital'
@@ -959,6 +1116,10 @@ def GetSeriesYears(dom):
             else:
                 break
 
+        if all([int(number_issues) == 1, tempseries['SeriesYear'] < helpers.today()[:4], tempseries['Type'] != 'One-Shot', tempseries['Type'] != 'TPB']):
+            booktype = 'One-Shot'
+        else:
+            booktype = tempseries['Type']
 
         serieslist.append({"ComicID":    tempseries['ComicID'],
                            "ComicName":  tempseries['Series'],
@@ -966,7 +1127,7 @@ def GetSeriesYears(dom):
                            "Publisher":  tempseries['Publisher'],
                            "Volume":     tempseries['Volume'],
                            "Aliases":    tempseries['Aliases'],
-                           "Type":       tempseries['Type']})
+                           "Type":       booktype})
 
     return serieslist
 
@@ -1102,6 +1263,35 @@ def GetImportList(results):
 
 
     return serieslist
+
+def db_updates(results, rtype='issueid'):
+    # type is either 'issueid' or 'comicid'
+    # issueid = update based on changes to issues (new issues, updates, etc)
+    # comicid = update based on changes to comicid
+    dataset = []
+    data = results['results']
+    for x in data:
+        if rtype == 'comicid':
+            xlastissue = None
+            if x['last_issue'] is not None:
+                xlastissue = {'issueid': x['last_issue'],
+                              'issue_number': x['last_issue']['issue_number']}
+
+            dataset.append({
+                               'comicid': x['id'],
+                               'count_of_issues': x['count_of_issues'],
+                               'last_updated': x['date_last_updated'],
+                               'last_issue': xlastissue,
+                          })
+        else:
+            dataset.append({
+                               'comicid': x['volume'],
+                               'issueid': x['id'],
+                               'last_updated': x['date_last_updated'],
+                               'issue_number': x['issue_number'],
+                          })
+    return dataset
+
 
 def drophtml(html):
     if html is not None:

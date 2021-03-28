@@ -23,6 +23,9 @@ from datetime import timedelta
 import webbrowser
 import sqlite3
 import itertools
+import json
+import requests
+import time
 import csv
 import shutil
 import queue
@@ -49,7 +52,7 @@ LOG_DIR = None
 LOGTYPE = 'log'
 LOG_LANG = 'en'
 LOG_CHARSET = 'UTF-8'
-LOG_LEVEL = 1
+LOG_LEVEL = None
 LOGLIST = []
 ARGS = None
 SIGNAL = None
@@ -89,7 +92,8 @@ SCHED_MONITOR_LAST = None
 SCHED_SEARCH_LAST = None
 SCHED_VERSION_LAST = None
 SCHED_DBUPDATE_LAST = None
-DBUPDATE_INTERVAL = 5
+DBUPDATE_INTERVAL = 1440 # 24hrs
+DB_BACKFILL = False
 DBLOCK = False
 DB_FILE = None
 UMASK = None
@@ -115,7 +119,7 @@ USE_BLACKHOLE = False
 USE_RTORRENT = False
 USE_DELUGE = False
 USE_TRANSMISSION = False
-USE_QBITTORENT = False
+USE_QBITTORRENT = False
 USE_UTORRENT = False
 USE_WATCHDIR = False
 SNPOOL = None
@@ -128,10 +132,14 @@ NZB_QUEUE = queue.Queue()
 PP_QUEUE = queue.Queue()
 SEARCH_QUEUE = queue.Queue()
 DDL_QUEUE = queue.Queue()
+RETURN_THE_NZBQUEUE = queue.Queue()
+MASS_ADD = None
+ADD_LIST = []
 SEARCH_TIER_DATE = None
 COMICSORT = None
 PULLBYFILE = False
 CFG = None
+PUBLISHER_IMPRINTS = None
 CURRENT_WEEKNUMBER = None
 CURRENT_YEAR = None
 INSTALL_TYPE = None
@@ -149,7 +157,10 @@ DDL_LOCK = False
 CMTAGGER_PATH = None
 STATIC_COMICRN_VERSION = "1.01"
 STATIC_APC_VERSION = "2.04"
+ISSUE_EXCEPTIONS = ['AU', 'AI', 'INH', 'NOW', 'MU', 'HU', 'LR', 'A', 'B', 'C', 'X', 'O','SUMMER', 'SPRING', 'FALL', 'WINTER', 'PREVIEW', 'OMEGA']
 SAB_PARAMS = None
+TMP_PROV = None
+EXT_IP = None
 COMICINFO = ()
 SCHED = BackgroundScheduler({
                              'apscheduler.executors.default': {
@@ -170,11 +181,12 @@ def initialize(config_file):
         global CONFIG, _INITIALIZED, QUIET, CONFIG_FILE, OS_DETECT, MAINTENANCE, CURRENT_VERSION, LATEST_VERSION, COMMITS_BEHIND, INSTALL_TYPE, IMPORTLOCK, PULLBYFILE, INKDROPS_32P, \
                DONATEBUTTON, CURRENT_WEEKNUMBER, CURRENT_YEAR, UMASK, USER_AGENT, SNATCHED_QUEUE, NZB_QUEUE, PP_QUEUE, SEARCH_QUEUE, DDL_QUEUE, PULLNEW, COMICSORT, WANTED_TAB_OFF, CV_HEADERS, \
                IMPORTBUTTON, IMPORT_FILES, IMPORT_TOTALFILES, IMPORT_CID_COUNT, IMPORT_PARSED_COUNT, IMPORT_FAILURE_COUNT, CHECKENABLED, CVURL, DEMURL, EXPURL, WWTURL, WWT_CF_COOKIEVALUE, \
-               DDLPOOL, NZBPOOL, SNPOOL, PPPOOL, SEARCHPOOL, \
-               USE_SABNZBD, USE_NZBGET, USE_BLACKHOLE, USE_RTORRENT, USE_UTORRENT, USE_QBITTORRENT, USE_DELUGE, USE_TRANSMISSION, USE_WATCHDIR, SAB_PARAMS, \
+               DDLPOOL, NZBPOOL, SNPOOL, PPPOOL, SEARCHPOOL, RETURN_THE_NZBQUEUE, MASS_ADD, ADD_LIST, \
+               USE_SABNZBD, USE_NZBGET, USE_BLACKHOLE, USE_RTORRENT, USE_UTORRENT, USE_QBITTORRENT, USE_DELUGE, USE_TRANSMISSION, USE_WATCHDIR, SAB_PARAMS, PUBLISHER_IMPRINTS, \
                PROG_DIR, DATA_DIR, CMTAGGER_PATH, DOWNLOAD_APIKEY, LOCAL_IP, STATIC_COMICRN_VERSION, STATIC_APC_VERSION, KEYS_32P, AUTHKEY_32P, FEED_32P, FEEDINFO_32P, \
-               MONITOR_STATUS, SEARCH_STATUS, RSS_STATUS, WEEKLY_STATUS, VERSION_STATUS, UPDATER_STATUS, DBUPDATE_INTERVAL, LOG_LANG, LOG_CHARSET, APILOCK, SEARCHLOCK, DDL_LOCK, LOG_LEVEL, \
-               SCHED_RSS_LAST, SCHED_WEEKLY_LAST, SCHED_MONITOR_LAST, SCHED_SEARCH_LAST, SCHED_VERSION_LAST, SCHED_DBUPDATE_LAST, COMICINFO, SEARCH_TIER_DATE, BACKENDSTATUS_CV, BACKENDSTATUS_WS, PROVIDER_STATUS
+               MONITOR_STATUS, SEARCH_STATUS, RSS_STATUS, WEEKLY_STATUS, VERSION_STATUS, UPDATER_STATUS, DBUPDATE_INTERVAL, DB_BACKFILL, LOG_LANG, LOG_CHARSET, APILOCK, SEARCHLOCK, DDL_LOCK, LOG_LEVEL, \
+               SCHED_RSS_LAST, SCHED_WEEKLY_LAST, SCHED_MONITOR_LAST, SCHED_SEARCH_LAST, SCHED_VERSION_LAST, SCHED_DBUPDATE_LAST, COMICINFO, SEARCH_TIER_DATE, \
+               BACKENDSTATUS_CV, BACKENDSTATUS_WS, PROVIDER_STATUS, TMP_PROV, EXT_IP, ISSUE_EXCEPTIONS
 
         cc = mylar.config.Config(config_file)
         CONFIG = cc.read(startup=True)
@@ -255,6 +267,44 @@ def initialize(config_file):
 
         #set the default URL for nzbindex
         EXPURL = 'https://nzbindex.nl/'
+
+        #load in the imprint json here.
+        try:
+            pub_path = os.path.join(mylar.CONFIG.CACHE_DIR, 'imprints.json')
+            update_imprints = True
+            if os.path.exists(pub_path):
+                filetime = max(os.path.getctime(pub_path), os.path.getmtime(pub_path))
+                if ((time.time() > filetime) / 3600 > 24):
+                    logger.info('[IMPRINT_LOADS] Publisher imprint listing found, but possibly stale ( > 24hrs). Retrieving up-to-date listing')
+                else:
+                    update_imprints = False
+                    logger.info('[IMPRINT_LOADS] Loading Publisher imprints data from local file.')
+                    with open(pub_path) as json_file:
+                        PUBLISHER_IMPRINTS = json.load(json_file)
+            else:
+                logger.info('[IMPRINT_LOADS] No data for publisher imprints locally. Retrieving up-to-date listing')
+
+            if update_imprints is True:
+                req_pub = requests.get('https://mylar3.github.io/publisher_imprints/imprints.json', verify=True)
+                try:
+                    json_pub = req_pub.json()
+                    with open(pub_path, 'w', encoding='utf-8') as outfile:
+                        json.dump(json_pub, outfile, indent=4, ensure_ascii=False)
+                except Exception as e:
+                    logger.error('Unable to write imprints.json to %s. Error returned: %s' % (pub_path, e))
+                else:
+                    logger.fdebug('Successfully written imprints.json file to %s' % pub_path)
+                    PUBLISHER_IMPRINTS = json_pub
+
+        except requests.exceptions.RequestException as e:
+            logger.warn('[IMPRINT_LOADS] Unable to retrieve publisher imprints listing at this time. Error: %s' % e)
+            PUBLISHER_IMPRINTS = None
+        except Exception as e:
+            logger.warn('[IMPRINT_LOADS] Unable to load publisher -> imprint file. Error: %s' % e)
+            PUBLISHER_IMPRINTS = None
+        else:
+            if PUBLISHER_IMPRINTS is not None:
+                logger.info('[IMPRINT_LOADS] Successfully loaded imprints for %s publishers' % (len(PUBLISHER_IMPRINTS['publishers'])))
 
         if CONFIG.LOCMOVE:
             helpers.updateComicLocation()
@@ -354,8 +404,11 @@ def start():
 
             # Start our scheduled background tasks
             if UPDATER_STATUS != 'Paused':
-                SCHED.add_job(func=updater.dbUpdate, id='dbupdater', name='DB Updater', args=[None,None,True], trigger=IntervalTrigger(hours=0, minutes=5, timezone='UTC'))
-                logger.info('DB Updater sccheduled to fire every 5 minutes')
+                # we want to run the db updater on every startup regardless of last run
+                # this will ensure we get better coverage, and if nothing has updated it
+                # will just return to the normal dbupdater_interval duration.
+                SCHED.add_job(func=updater.watchlist_updater, id='dbupdater', next_run_time=datetime.datetime.utcnow(), name='DB Updater', args=[None,True], trigger=IntervalTrigger(hours=0, minutes=DBUPDATE_INTERVAL, timezone='UTC'))
+                logger.info('[DB UPDATER] DB Updater scheduled to run immediately.')
 
             #let's do a run at the Wanted issues here (on startup) if enabled.
             if SEARCH_STATUS != 'Paused':
@@ -660,7 +713,7 @@ def queue_schedule(queuetype, mode):
 
 
 def sql_db():
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(DB_FILE, detect_types=sqlite3.PARSE_DECLTYPES)
     return conn
 
 def dbcheck():
@@ -677,7 +730,7 @@ def dbcheck():
         except sqlite3.OperationalError:
             logger.warn('Unable to update readinglist table to new storyarc table format.')
 
-    c.execute('CREATE TABLE IF NOT EXISTS comics (ComicID TEXT UNIQUE, ComicName TEXT, ComicSortName TEXT, ComicYear TEXT, DateAdded TEXT, Status TEXT, IncludeExtras INTEGER, Have INTEGER, Total INTEGER, ComicImage TEXT, ComicPublisher TEXT, ComicLocation TEXT, ComicPublished TEXT, NewPublish TEXT, LatestIssue TEXT, LatestDate TEXT, Description TEXT, QUALalt_vers TEXT, QUALtype TEXT, QUALscanner TEXT, QUALquality TEXT, LastUpdated TEXT, AlternateSearch TEXT, UseFuzzy TEXT, ComicVersion TEXT, SortOrder INTEGER, DetailURL TEXT, ForceContinuing INTEGER, ComicName_Filesafe TEXT, AlternateFileName TEXT, ComicImageURL TEXT, ComicImageALTURL TEXT, DynamicComicName TEXT, AllowPacks TEXT, Type TEXT, Corrected_SeriesYear TEXT, Corrected_Type TEXT, TorrentID_32P TEXT, LatestIssueID TEXT, IgnoreType INTEGER)')
+    c.execute('CREATE TABLE IF NOT EXISTS comics (ComicID TEXT UNIQUE, ComicName TEXT, ComicSortName TEXT, ComicYear TEXT, DateAdded TEXT, Status TEXT, IncludeExtras INTEGER, Have INTEGER, Total INTEGER, ComicImage TEXT, FirstImageSize INTEGER, ComicPublisher TEXT, PublisherImprint TEXT, ComicLocation TEXT, ComicPublished TEXT, NewPublish TEXT, LatestIssue TEXT, LatestDate TEXT, Description TEXT, DescriptionEdit TEXT, QUALalt_vers TEXT, QUALtype TEXT, QUALscanner TEXT, QUALquality TEXT, LastUpdated TEXT, AlternateSearch TEXT, UseFuzzy TEXT, ComicVersion TEXT, SortOrder INTEGER, DetailURL TEXT, ForceContinuing INTEGER, ComicName_Filesafe TEXT, AlternateFileName TEXT, ComicImageURL TEXT, ComicImageALTURL TEXT, DynamicComicName TEXT, AllowPacks TEXT, Type TEXT, Corrected_SeriesYear TEXT, Corrected_Type TEXT, TorrentID_32P TEXT, LatestIssueID TEXT, Collects CLOB, IgnoreType INTEGER, AgeRating TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS issues (IssueID TEXT, ComicName TEXT, IssueName TEXT, Issue_Number TEXT, DateAdded TEXT, Status TEXT, Type TEXT, ComicID TEXT, ArtworkURL Text, ReleaseDate TEXT, Location TEXT, IssueDate TEXT, DigitalDate TEXT, Int_IssueNumber INT, ComicSize TEXT, AltIssueNumber TEXT, IssueDate_Edit TEXT, ImageURL TEXT, ImageURL_ALT TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS snatched (IssueID TEXT, ComicName TEXT, Issue_Number TEXT, Size INTEGER, DateAdded TEXT, Status TEXT, FolderName TEXT, ComicID TEXT, Provider TEXT, Hash TEXT, crc TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS upcoming (ComicName TEXT, IssueNumber TEXT, ComicID TEXT, IssueID TEXT, IssueDate TEXT, Status TEXT, DisplayComicName TEXT)')
@@ -692,13 +745,21 @@ def dbcheck():
     c.execute('CREATE TABLE IF NOT EXISTS searchresults (SRID TEXT, results Numeric, Series TEXT, publisher TEXT, haveit TEXT, name TEXT, deck TEXT, url TEXT, description TEXT, comicid TEXT, comicimage TEXT, issues TEXT, comicyear TEXT, ogcname TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS ref32p (ComicID TEXT UNIQUE, ID TEXT, Series TEXT, Updated TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS oneoffhistory (ComicName TEXT, IssueNumber TEXT, ComicID TEXT, IssueID TEXT, Status TEXT, weeknumber TEXT, year TEXT)')
-    c.execute('CREATE TABLE IF NOT EXISTS jobhistory (JobName TEXT, prev_run_datetime timestamp, prev_run_timestamp REAL, next_run_datetime timestamp, next_run_timestamp REAL, last_run_completed TEXT, successful_completions TEXT, failed_completions TEXT, status TEXT)')
+    c.execute('CREATE TABLE IF NOT EXISTS jobhistory (JobName TEXT, prev_run_datetime timestamp, prev_run_timestamp REAL, next_run_datetime timestamp, next_run_timestamp REAL, last_run_completed TEXT, successful_completions TEXT, failed_completions TEXT, status TEXT, last_date timestamp)')
     c.execute('CREATE TABLE IF NOT EXISTS manualresults (provider TEXT, id TEXT, kind TEXT, comicname TEXT, volume TEXT, oneoff TEXT, fullprov TEXT, issuenumber TEXT, modcomicname TEXT, name TEXT, link TEXT, size TEXT, pack_numbers TEXT, pack_issuelist TEXT, comicyear TEXT, issuedate TEXT, tmpprov TEXT, pack TEXT, issueid TEXT, comicid TEXT, sarc TEXT, issuearcid TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS storyarcs(StoryArcID TEXT, ComicName TEXT, IssueNumber TEXT, SeriesYear TEXT, IssueYEAR TEXT, StoryArc TEXT, TotalIssues TEXT, Status TEXT, inCacheDir TEXT, Location TEXT, IssueArcID TEXT, ReadingOrder INT, IssueID TEXT, ComicID TEXT, ReleaseDate TEXT, IssueDate TEXT, Publisher TEXT, IssuePublisher TEXT, IssueName TEXT, CV_ArcID TEXT, Int_IssueNumber INT, DynamicComicName TEXT, Volume TEXT, Manual TEXT, DateAdded TEXT, DigitalDate TEXT, Type TEXT, Aliases TEXT)')
     c.execute('CREATE TABLE IF NOT EXISTS ddl_info (ID TEXT UNIQUE, series TEXT, year TEXT, filename TEXT, size TEXT, issueid TEXT, comicid TEXT, link TEXT, status TEXT, remote_filesize TEXT, updated_date TEXT, mainlink TEXT, issues TEXT)')
+    c.execute('CREATE TABLE IF NOT EXISTS exceptions_log(date TEXT UNIQUE, comicname TEXT, issuenumber TEXT, seriesyear TEXT, issueid TEXT, comicid TEXT, booktype TEXT, searchmode TEXT, error TEXT, error_text TEXT, filename TEXT, line_num TEXT, func_name TEXT, traceback TEXT)')
     conn.commit
     c.close
 
+    #create some indexes
+    c.execute('CREATE INDEX IF NOT EXISTS issues_id on issues(IssueID)')
+    c.execute('CREATE INDEX IF NOT EXISTS comics_id on comics(ComicID)')
+
+    #might enable these at a later date.
+    #c.execute('''PRAGMA synchronous = EXTRA''')
+    #c.execute('''PRAGMA journal_mode = WAL''')
 
     #add in the late players to the game....
     # -- Comics Table --
@@ -822,6 +883,26 @@ def dbcheck():
         c.execute('SELECT IgnoreType from comics')
     except sqlite3.OperationalError:
         c.execute('ALTER TABLE comics ADD COLUMN IgnoreType INTEGER')
+
+    try:
+        c.execute('SELECT FirstImageSize from comics')
+    except sqlite3.OperationalError:
+        c.execute('ALTER TABLE comics ADD COLUMN FirstImageSize INTEGER')
+
+    try:
+        c.execute('SELECT AgeRating from comics')
+    except sqlite3.OperationalError:
+        c.execute('ALTER TABLE comics ADD COLUMN AgeRating TEXT')
+
+    try:
+        c.execute('SELECT PublisherImprint from comics')
+    except sqlite3.OperationalError:
+        c.execute('ALTER TABLE comics ADD COLUMN PublisherImprint TEXT')
+
+    try:
+        c.execute('SELECT DescriptionEdit from comics')
+    except sqlite3.OperationalError:
+        c.execute('ALTER TABLE comics ADD COLUMN DescriptionEdit TEXT')
 
     try:
         c.execute('SELECT DynamicComicName from comics')
@@ -1268,6 +1349,16 @@ def dbcheck():
         c.execute('SELECT status from jobhistory')
     except sqlite3.OperationalError:
         c.execute('ALTER TABLE jobhistory ADD COLUMN status TEXT')
+
+    # last date is used by db Updater if the update list is > 1500
+    # so it can stagger the requests across an hr or more
+    try:
+        c.execute('SELECT last_date from jobhistory')
+    except sqlite3.OperationalError:
+        c.execute('ALTER TABLE jobhistory ADD COLUMN last_date timestamp')
+        mylar.DB_BACKFILL = True
+    else:
+        mylar.DB_BACKFILL = False
 
     ## -- DDL_info Table --
     try:
